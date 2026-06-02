@@ -186,73 +186,159 @@ Les requêtes PromQL utilisées pour calculer les percentiles de latence (p50, p
 ## Partie 2 — Analyse des données
 
 ### Dashboard Metabase
-
-#### Carte 1 —
+#### Carte 1 — DAU sur 30 jours
 
 **Capture :**
+![DAU sur 30 jours](./screen_rapport/P2_carte1.png)
 
 **Requête SQL :**
 
 ```sql
-
+SELECT
+  CAST("public"."events_raw"."occurred_at" AS date) AS "occurred_at",
+  count(distinct "public"."events_raw"."user_id") AS "count"
+FROM
+  "public"."events_raw"
+GROUP BY
+  CAST("public"."events_raw"."occurred_at" AS date)
+ORDER BY
+  CAST("public"."events_raw"."occurred_at" AS date) ASC
 ```
+---
+Le dataset affiche les données sur 30 jours . Le DAU
+est entre 78 et 186 utilisateurs actifs par jour. On n'observe pas de tendance de croissance nette mais plutôt une moyenne :
+le trafic est stable, sans pics anormaux, ce
+qui confirme un dataset simulé à débit constant.
 
-**Commentaire :**
 
 ---
 
-#### Carte 2 —
+#### Carte 2 — Funnel global
 
 **Capture :**
+![Funnel global](./screen_rapport/P2_carte2.png)
 
 **Requête SQL :**
 
 ```sql
-
+SELECT
+  "public"."events_raw"."event_name" AS "event_name",
+  COUNT(*) AS "count"
+FROM
+  "public"."events_raw"
+WHERE
+  ("public"."events_raw"."event_name" = 'page_view')
+ 
+    OR (
+    "public"."events_raw"."event_name" = 'task_create_click'
+  )
+  OR (
+    "public"."events_raw"."event_name" = 'task_form_submit'
+  )
+  OR ("public"."events_raw"."event_name" = 'task_toggle')
+GROUP BY
+  "public"."events_raw"."event_name"
+ORDER BY
+  "public"."events_raw"."event_name" ASC
 ```
 
-**Commentaire :**
-
+Le funnel a 5 000 page_view, 4 490 task_create_click
+, 3 198 task_form_submit  et
+1 963 task_toggle . La plus forte
+diminution se trouve entre task_form_submit et task_toggle :
+seulement 61 % des utilisateurs qui soumettent un formulaire
+complètent. C'est l'étape la plus fragile du
+funnel.
 ---
-
-#### Carte 3 —
+#### Carte 3 — Top events
 
 **Capture :**
+![Top events](./screen_rapport/P2_carte3.png)
 
 **Requête SQL :**
 
 ```sql
-
+SELECT
+  "public"."events_raw"."event_name" AS "event_name",
+  COUNT(*) AS "count"
+FROM
+  "public"."events_raw"
+GROUP BY
+  "public"."events_raw"."event_name"
+ORDER BY
+  "public"."events_raw"."event_name" ASC
 ```
 
-**Commentaire :**
-
+Le dataset a 4 événements qui correspondent
+aux 4 étapes du funnel. page_view est l'événement le plus
+fréquent (5 000), task_create_click (4 490),
+task_form_submit (3 198) et task_toggle (1 963). 
 ---
-
-#### Carte 4 —
+#### Carte 4 — Conversion par device (page_view → task_form_submit)
 
 **Capture :**
+![Conversion par device](./screen_rapport/P2_carte4.png)
 
 **Requête SQL :**
 
 ```sql
-
+SELECT
+  device,
+  COUNT(DISTINCT CASE WHEN event_name = 'page_view'        THEN session_id END) AS sessions_page_view,
+  COUNT(DISTINCT CASE WHEN event_name = 'task_form_submit' THEN session_id END) AS sessions_submit,
+  ROUND(
+    100.0 *
+    COUNT(DISTINCT CASE WHEN event_name = 'task_form_submit' THEN session_id END) /
+    NULLIF(COUNT(DISTINCT CASE WHEN event_name = 'page_view' THEN session_id END), 0)
+  , 1) AS conversion_pct
+FROM events_raw
+GROUP BY device
+ORDER BY device;
 ```
-
-**Commentaire :**
-
+Desktop convertit à 73.3 % (1 820 / 2 484 sessions) contre 54.8 %
+sur mobile (1 378 / 2 516 sessions), soit un écart de 18,5 points.
+À première lecture, cela semble indiquer une expérience mobile
+fortement dégradée. Mais cet agrégat brut est trompeur — voir
+section Biais identifié.
 ---
 
-### Biais identifié
+### Biais identifié : Paradoxe de Simpson 
+
+Dans le fichier events.csv, colonnes cohort et device
+
+La Carte 4 montre que sur mobile la convertion est de 18,5 points
+de moins que ordinateur (54,8 % vs 73,3 %). On pourrait en conclure
+que l'expérience mobile est moin bien. Mais ce résultat est
+trompeur : c'est un paradoxe de Simpson causé par la répartition asymétrique des devices entre les
+cohortes.
 
 **Démonstration chiffrée :**
 
+![Tableau cohort × device](./screen_rapport/P2_bias.png)
+
+**Requête SQL :**
+
+```sql
+SELECT
+  cohort,
+  device,
+  COUNT(DISTINCT CASE WHEN event_name = 'page_view'        THEN session_id END) AS sessions_pv,
+  COUNT(DISTINCT CASE WHEN event_name = 'task_form_submit' THEN session_id END) AS sessions_submit,
+  ROUND(
+    100.0 *
+    COUNT(DISTINCT CASE WHEN event_name = 'task_form_submit' THEN session_id END) /
+    NULLIF(COUNT(DISTINCT CASE WHEN event_name = 'page_view' THEN session_id END), 0)
+  , 1) AS conversion_pct
+FROM events_raw
+GROUP BY cohort, device
+ORDER BY cohort, device;
+```
 ---
 
 ### 3 recommandations PM
 
-1. 
-
-2. 
-
-3. 
+1. **Mobile convertit 18,5 points de moins que desktop** (54,8 % vs 73,3 %).
+   Le formulaire de création de tâche est probablement trop complexe
+   sur petit écran. Il faut A/B tester une version mobile simplifiée
+   du formulaire (uniquement le champ titre) dès la semaine prochaine,
+   en ciblant les nouveaux utilisateurs mobile des deux cohortes.
